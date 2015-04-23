@@ -14,7 +14,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import gzip
+import xml.dom.minidom
 from hashlib import md5
+from svglib import svglib
 from reportlab.lib.enums import TA_RIGHT
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.utils import flatten, open_for_read, getStringIO, \
@@ -36,6 +39,13 @@ except Exception:
     StringIO_old = StringIO
     class StringIO(object):
         StringIO = StringIO_old
+
+# monkey patch fix for svglib
+try:
+    assert svglib.string
+except AttributeError:
+    import string
+    svglib.string = string
 
 import cgi
 import copy
@@ -244,12 +254,12 @@ class PmlPageTemplate(PageTemplate):
                         if self.isPortrait():
                             w = iw * factor_min
                             h = ih * factor_min
-                            canvas.drawImage(img, 0, ph - h, w, h)
+                            img.drawOn(canvas, 0, ph - h, w, h)
                         elif self.isLandscape():
                             factor_max = max(wfactor, hfactor)
                             h = ih * factor_max
                             w = iw * factor_min
-                            canvas.drawImage(img, 0, 0, w, h)
+                            img.drawOn(canvas, 0, 0, w, h)
                     except:
                         log.exception("Draw background")
 
@@ -307,6 +317,7 @@ class PmlImageReader(object):  # TODO We need a factory here, returning either a
             #start wih lots of null private fields, to be populated by
         #the relevant engine.
         self.fileName = fileName
+        self._is_svg = False
         self._image = None
         self._width = None
         self._height = None
@@ -370,14 +381,36 @@ class PmlImageReader(object):  # TODO We need a factory here, returning either a
                 else:
                     raise
 
+    def _read_svg(self, fp):
+        fp.seek(0)
+        gzfp = StringIO.StringIO(fp.read())
+        fp.seek(0)
+        try:
+            # try unzip if is svgz
+            data = gzip.GzipFile(fileobj=gzfp).read()
+            fp = StringIO.StringIO(data)
+        except IOError:
+            pass
+        doc = xml.dom.minidom.parse(fp)
+        svg = doc.documentElement
+        path = fp.name if hasattr(fp, 'name') else 'unnamed.svg'
+        svgRenderer = svglib.SvgRenderer(path)
+        svgRenderer.render(svg)
+        self._is_svg = True
+        drawing = svgRenderer.finish()
+        return drawing
+
     def _read_image(self, fp):
-        if sys.platform[0:4] == 'java':
-            from javax.imageio import ImageIO
-            from java.io import ByteArrayInputStream
-            input_stream = ByteArrayInputStream(fp.read())
-            return ImageIO.read(input_stream)
-        elif PILImage:
-            return PILImage.open(fp)
+        try:
+            if sys.platform[0:4] == 'java':
+                from javax.imageio import ImageIO
+                from java.io import ByteArrayInputStream
+                input_stream = ByteArrayInputStream(fp.read())
+                return ImageIO.read(input_stream)
+            elif PILImage:
+                return PILImage.open(fp)
+        except:
+            return self._read_svg(fp)
 
     def _jpeg_fh(self):
         fp = self.fp
@@ -389,7 +422,11 @@ class PmlImageReader(object):  # TODO We need a factory here, returning either a
 
     def getSize(self):
         if self._width is None or self._height is None:
-            if sys.platform[0:4] == 'java':
+            if self._is_svg:
+                # reportlib.graphics.shapes.Drawing type
+                self._width = self._image.width
+                self._height = self._image.height
+            elif sys.platform[0:4] == 'java':
                 self._width = self._image.getWidth()
                 self._height = self._image.getHeight()
             else:
@@ -398,7 +435,10 @@ class PmlImageReader(object):  # TODO We need a factory here, returning either a
 
     def getRGBData(self):
         "Return byte array of RGB data as string"
-        if self._data is None:
+        if self._is_svg:
+            # not available for SVG image
+            return None
+        elif self._data is None:
             self._dataA = None
             if sys.platform[0:4] == 'java':
                 import jarray  # TODO: Move to top.
@@ -441,7 +481,9 @@ class PmlImageReader(object):  # TODO We need a factory here, returning either a
         return width, height, self.getRGBData()
 
     def getTransparent(self):
-        if sys.platform[0:4] == 'java':
+        if self._is_svg:
+            return None
+        elif sys.platform[0:4] == 'java':
             return None
         elif "transparency" in self._image.info:
             transparency = self._image.info["transparency"] * 3
@@ -461,6 +503,19 @@ class PmlImageReader(object):  # TODO We need a factory here, returning either a
                 return None
         else:
             return None
+
+    def drawOn(self, canvas, x, y, w, h, mask=None):
+        if self._is_svg:
+            drawing = self._image
+            if w != drawing.width or h != drawing.height:
+                drawing = self._image.copy()
+                drawing.transform = (w / drawing.width, 0, 0,
+                                     h / drawing.height, 0, 0)
+                drawing.width = w
+                drawing.height = h
+            drawing.drawOn(canvas, x, y)
+        else:
+            canvas.drawImage(self, x, y, w, h, mask=mask)
 
     def __str__(self):
         try:
@@ -509,13 +564,8 @@ class PmlImage(Flowable, PmlMaxHeightMixIn):
         return img
 
     def draw(self):
-        img = self.getImage()
-        self.canv.drawImage(
-            img,
-            0, 0,
-            self.dWidth,
-            self.dHeight,
-            mask=self._mask)
+        self.getImage().drawOn(self.canv, 0, 0, self.dWidth,
+                               self.dHeight, self._mask)
 
     def identity(self, maxLen=None):
         r = Flowable.identity(self, maxLen)

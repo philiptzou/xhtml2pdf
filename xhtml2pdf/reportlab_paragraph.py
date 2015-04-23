@@ -305,7 +305,8 @@ def _putFragLine(cur_x, tx, line):
                     txfs = xs.style.fontSize
                 iy0, iy1 = imgVRange(h, cbDefn.valign, txfs)
                 cur_x_s = cur_x + nSpaces * ws
-                tx._canvas.drawImage(cbDefn.image.getImage(), cur_x_s, cur_y + iy0, w, h, mask='auto')
+                cbDefn.image.getImage().drawOn(tx._canvas, cur_x_s,
+                                               cur_y + iy0, w, h, mask='auto')
                 cur_x += w
                 cur_x_s += w
                 setXPos(tx, cur_x_s - tx._x0)
@@ -603,14 +604,12 @@ def _drawBullet(canvas, offset, cur_y, bulletText, style):
                 width = image.drawWidth
                 height = image.drawHeight
                 gap = style.bulletFontSize * 0.25
-                img = image.getImage()
                 # print style.bulletIndent, offset, width
-                canvas.drawImage(
-                    img,
+                image.getImage().drawOn(
+                    canvas,
                     style.leftIndent - width - gap,
                     cur_y + getattr(style, "bulletOffsetY", 0),
-                    width,
-                    height)
+                    width, height)
             else:
                 tx2.setFont(f.fontName, f.fontSize)
                 tx2.setFillColor(f.textColor)
